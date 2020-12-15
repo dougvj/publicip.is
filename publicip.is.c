@@ -1,5 +1,6 @@
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/time.h>
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -7,6 +8,7 @@
 #include <errno.h>
 #include <pthread.h>
 #include <string.h>
+#include <stdbool.h>
 
 struct client_data {
   int client_sock;
@@ -22,12 +24,55 @@ void _500(int client) {
   };
 }
 
+bool get_start_line_and_headers(int client, char* buffer, int max_buf_len) {
+  // Look for end of headers
+  static const char END_HEADERS_BYTES[] = "\r\n\r\n";
+  int num_end_headers_bytes_found = 0;
+  for (;;) {
+    int num = recv(client, buffer, max_buf_len, 0);
+    if (num == -1) {
+      perror("recv");
+      return false;
+    }
+    if (num == 0) {
+      fprintf(stderr, "recv: Unexpected socket close\n");
+      return false;
+    }
+    for (int i = 0; i < num; i++) {
+      if (buffer[i] == END_HEADERS_BYTES[num_end_headers_bytes_found]) {
+        num_end_headers_bytes_found++;
+        if (num_end_headers_bytes_found == sizeof(END_HEADERS_BYTES) - 1) {
+          return true;
+        }
+      } else {
+        num_end_headers_bytes_found = 0;
+      }
+    }
+    buffer += num;
+    max_buf_len -= num;
+    if (max_buf_len == 0) {
+      fprintf(stderr, "recv: Buffer Full\n");
+      return false;
+    }
+  }
+}
+
+
+
 void return_ip(struct client_data* d) {
-  //TODO At least wait until client headers are sent, we have a race condition
-  //     Also consider parsing at least the request and returning 404 etc
+  int client = d->client_sock;
+  // Set socket timeout to 5
+  struct timeval tv = {
+    .tv_sec = 5
+  };
+  setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
+  char buffer[MAX_BUF_LEN];
+  if (get_start_line_and_headers(client, buffer, MAX_BUF_LEN) == false) {
+    goto fail;
+  }
+  // TODO parse the start line in case there are wierd requests
   char ip[INET6_ADDRSTRLEN];
   struct in6_addr* addr6 = &(d->client_addr.sin6_addr);
-  struct in4_addr* addr4 = (struct in4_addr*)&(addr6->s6_addr[12]);
   struct in_addr* addr = (struct in_addr*)addr6;
   sa_family_t family = AF_INET6;
   // Detect ipv4 mapped ipv6 addr by converting raw IP address bytes into two 
@@ -37,6 +82,8 @@ void return_ip(struct client_data* d) {
   // TODO deal with endianess, works on arm and x86 though so  ¯\_(ツ)_/¯
      (addr_blocks[1] & 0x00000000FFFFFFFF) == 0x00000000FFFF0000) {
     family = AF_INET;
+    // addr4 is the last 4 bytes of addr6, which is 16 bytes
+    struct in4_addr* addr4 = (struct in4_addr*)&(addr6->s6_addr[12]);
     addr = (struct in_addr*)addr4;
   }
   if (inet_ntop(family, addr, ip, INET6_ADDRSTRLEN) == NULL) {
@@ -45,9 +92,8 @@ void return_ip(struct client_data* d) {
     goto fail;
   };
   unsigned int ip_len = strlen(ip);
-  char response[MAX_BUF_LEN];
   int response_len = snprintf(
-      response,
+      buffer,
       MAX_BUF_LEN,
       "HTTP/1.0 200 OK\r\n"
       "Content-Length: %u\r\n"
@@ -57,11 +103,11 @@ void return_ip(struct client_data* d) {
       ip_len + 1,
       ip
   );
-  if (send(d->client_sock, response, response_len, 0) == -1) {
+  if (send(d->client_sock, buffer, response_len, 0) == -1) {
       perror("send");
   }
-fail:
   fprintf(stderr, "%s\n", ip);
+fail:
   shutdown(d->client_sock, SHUT_RDWR);
   close(d->client_sock);
   free(d);

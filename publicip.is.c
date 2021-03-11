@@ -134,7 +134,7 @@ int main(int argc, char** argv) {
       perror("bind");
       exit(EXIT_FAILURE);
     }
-    listen(sock, 5);
+    listen(sock, 128);
     fprintf(stderr, "Waiting for clients on port %u\n", port);
     //TODO switch to epoll in a thread pool to see if that's faster
     for(;;) {

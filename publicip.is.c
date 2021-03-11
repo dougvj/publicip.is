@@ -75,10 +75,10 @@ void return_ip(struct client_data* d) {
   struct in6_addr* addr6 = &(d->client_addr.sin6_addr);
   struct in_addr* addr = (struct in_addr*)addr6;
   sa_family_t family = AF_INET6;
-  // Detect ipv4 mapped ipv6 addr by converting raw IP address bytes into two 
+  // Detect ipv4 mapped ipv6 addr by converting raw IP address bytes into two
   // 64-bit ints and looking for the ::FFFF prefix
   uint64_t *addr_blocks = (uint64_t*)addr6->s6_addr;
-  if (addr_blocks[0] == 0 && 
+  if (addr_blocks[0] == 0 &&
   // TODO deal with endianess, works on arm and x86 though so  ¯\_(ツ)_/¯
      (addr_blocks[1] & 0x00000000FFFFFFFF) == 0x00000000FFFF0000) {
     family = AF_INET;

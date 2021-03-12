@@ -20,6 +20,9 @@ struct client_data {
 };
 
 #define eprintf(...) fprintf(stderr, __VA_ARGS__);
+//#define eprintf(...) while(0) {}
+
+#define thread_perror(name) eprintf("%4i: %s: %s", thread_num, name, strerror(errno));
 
 #define MAX_BUF_LEN 1024
 
@@ -30,18 +33,18 @@ void _500(int client) {
   };
 }
 
-bool get_start_line_and_headers(int client, char* buffer, int max_buf_len) {
+bool get_start_line_and_headers(int client, char* buffer, int max_buf_len, int thread_num) {
   // Look for end of headers
   static const char END_HEADERS_BYTES[] = "\r\n\r\n";
   int num_end_headers_bytes_found = 0;
   for (;;) {
     int num = recv(client, buffer, max_buf_len, 0);
     if (num == -1) {
-      perror("recv");
+      thread_perror("recv");
       return false;
     }
     if (num == 0) {
-      eprintf("recv: Unexpected socket close\n");
+      eprintf("%4i: recv: Unexpected socket close\n", thread_num);
       return false;
     }
     for (int i = 0; i < num; i++) {
@@ -73,7 +76,7 @@ void return_ip(struct client_data* d, int thread_num) {
   };
   setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
   char buffer[MAX_BUF_LEN];
-  if (get_start_line_and_headers(client, buffer, MAX_BUF_LEN) == false) {
+  if (get_start_line_and_headers(client, buffer, MAX_BUF_LEN, thread_num) == false) {
     goto fail;
   }
   // TODO parse the start line in case there are wierd requests
@@ -93,7 +96,7 @@ void return_ip(struct client_data* d, int thread_num) {
     addr = (struct in_addr*)addr4;
   }
   if (inet_ntop(family, addr, ip, INET6_ADDRSTRLEN) == NULL) {
-    perror("inet_ntop");
+    thread_perror("inet_ntop");
     _500(d->client_sock);
     goto fail;
   };
@@ -110,9 +113,9 @@ void return_ip(struct client_data* d, int thread_num) {
       ip
   );
   if (send(d->client_sock, buffer, response_len, 0) == -1) {
-      perror("send");
+      thread_perror("send");
   }
-  eprintf("%3i: %s\n", thread_num, ip);
+  eprintf("%4i: %s\n", thread_num, ip);
 fail:
   shutdown(d->client_sock, SHUT_RDWR);
   close(d->client_sock);
@@ -190,6 +193,10 @@ int main(int argc, char** argv) {
         perror("socket");
         return EXIT_FAILURE;
     }
+    if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR,
+		         &(int){1}, sizeof(int)) < 0) {
+       perror("setsockopt: SO_REUSEADDR");
+    }
     struct sockaddr_in6 server;
     server.sin6_family = AF_INET6;
     server.sin6_port = htons(port);
@@ -198,7 +205,7 @@ int main(int argc, char** argv) {
       perror("bind");
       exit(EXIT_FAILURE);
     }
-    if (listen(sock, 128) < 0) {
+    if (listen(sock, num_threads * 2) < 0) {
       perror("listen");
       exit(EXIT_FAILURE);
     }

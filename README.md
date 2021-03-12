@@ -1,13 +1,13 @@
 # publicip.is
 
-Dead simple HTTP client that returns the client's IP, written in pure C.
+Dead simple HTTP server that returns the client's IP, written in pure C.
 Supports IPv6 and IPv4.
 
 Hosted right now at http://publicip.is
 
 # Usage
 
-`./publicip.is <listen-port>`
+`./publicip.is <listen-port> <num-threads (optional, default is number of cores)>`
 
 # Complilation
 

@@ -1,6 +1,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/time.h>
+#include <sys/sysinfo.h>
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -9,11 +10,16 @@
 #include <pthread.h>
 #include <string.h>
 #include <stdbool.h>
+#include <stdint.h>
+#include <stdatomic.h>
+#include <signal.h>
 
 struct client_data {
   int client_sock;
   struct sockaddr_in6 client_addr;
 };
+
+#define eprintf(...) fprintf(stderr, __VA_ARGS__);
 
 #define MAX_BUF_LEN 1024
 
@@ -35,7 +41,7 @@ bool get_start_line_and_headers(int client, char* buffer, int max_buf_len) {
       return false;
     }
     if (num == 0) {
-      fprintf(stderr, "recv: Unexpected socket close\n");
+      eprintf("recv: Unexpected socket close\n");
       return false;
     }
     for (int i = 0; i < num; i++) {
@@ -51,7 +57,7 @@ bool get_start_line_and_headers(int client, char* buffer, int max_buf_len) {
     buffer += num;
     max_buf_len -= num;
     if (max_buf_len == 0) {
-      fprintf(stderr, "recv: Buffer Full\n");
+      eprintf("recv: Buffer Full\n");
       return false;
     }
   }
@@ -59,7 +65,7 @@ bool get_start_line_and_headers(int client, char* buffer, int max_buf_len) {
 
 
 
-void return_ip(struct client_data* d) {
+void return_ip(struct client_data* d, int thread_num) {
   int client = d->client_sock;
   // Set socket timeout to 5
   struct timeval tv = {
@@ -106,20 +112,78 @@ void return_ip(struct client_data* d) {
   if (send(d->client_sock, buffer, response_len, 0) == -1) {
       perror("send");
   }
-  fprintf(stderr, "%s\n", ip);
+  eprintf("%3i: %s\n", thread_num, ip);
 fail:
   shutdown(d->client_sock, SHUT_RDWR);
   close(d->client_sock);
-  free(d);
+}
+
+void* worker_thread(void* data) {
+  int sock = ((intptr_t)(data));
+  static atomic_int thread_count = 0;
+  int thread_num = atomic_fetch_add(&thread_count, 1);
+  eprintf("Thread %i starting\n", thread_num);
+  struct client_data d;
+  socklen_t client_sock_len = sizeof(d.client_addr);
+  for (;;) {
+    int client =
+        accept(sock, (struct sockaddr *)&(d.client_addr), &client_sock_len);
+    if (client == -1) {
+      // Socket was closed
+      if (errno == EBADF || errno == EINVAL) {
+        break;
+      }
+      perror("accept");
+      continue;
+    }
+    d.client_sock = client;
+    return_ip(&d, thread_num);
+  }
+  eprintf("Thread %i stopping\n", thread_num);
+  return 0;
+}
+
+struct app_context {
+  int port;
+  int num_threads;
+  int sock;
+  pthread_t* threads;
+} context;
+
+void handle_term(int signo) {
+  int num_threads = context.num_threads;
+  eprintf("\nStopping server...\n");
+  shutdown(context.sock, SHUT_RDWR);
+  close(context.sock);
+  for (int i = 0; i < num_threads; i++) {
+    pthread_join(context.threads[i], NULL);
+  }
 }
 
 int main(int argc, char** argv) {
-    int port;
-    if (argc != 2) {
-      fprintf(stderr, "Usage:\n\t%s <port>\n", argv[0]);
+    int port, num_threads;
+    if (argc != 2 && argc != 3) {
+      eprintf("Usage:\n\t%s <port> (threads)\n"
+              "\t<port> The port to listen on\n"
+              "\t(threads) Optional number of threads to listen on\n"
+              "\t          If not specified, num cores is used\n",
+              argv[0]);
       exit(EXIT_FAILURE);
     } else {
       port = atoi(argv[1]);
+      if (port == 0) {
+        eprintf("Port is invalid\n");
+        exit(EXIT_FAILURE);
+      }
+      if (argc == 3) {
+        num_threads = atoi(argv[2]);
+        if (num_threads == 0) {
+          eprintf("Num threads is invalid\n");
+          exit(EXIT_FAILURE);
+        }
+      } else {
+        num_threads = get_nprocs();
+      }
     }
     int sock = socket(AF_INET6, SOCK_STREAM, 0);
     if (sock == -1) {
@@ -134,20 +198,32 @@ int main(int argc, char** argv) {
       perror("bind");
       exit(EXIT_FAILURE);
     }
-    listen(sock, 128);
-    fprintf(stderr, "Waiting for clients on port %u\n", port);
-    //TODO switch to epoll in a thread pool to see if that's faster
-    for(;;) {
-        struct client_data* d = malloc(sizeof(struct client_data));
-        socklen_t client_sock_len = sizeof(d->client_addr);
-        int client = accept(
-            sock,
-            (struct sockaddr*)&(d->client_addr),
-            &client_sock_len
-        );
-        d->client_sock = client;
-        pthread_t one_off;
-        pthread_create(&one_off, NULL, (void*(*)(void*))return_ip, d);
-        pthread_detach(one_off);
+    if (listen(sock, 128) < 0) {
+      perror("listen");
+      exit(EXIT_FAILURE);
     }
+    // Block signals in threads (signal masks are inherited)
+    sigset_t mask;
+    sigfillset(&mask);
+    pthread_sigmask(SIG_SETMASK, &mask, NULL);
+    // Create threads
+    pthread_t threads[num_threads];
+    for (int i = 0; i < num_threads; i++) {
+      pthread_create(&(threads[i]), NULL, worker_thread,
+                     (void *)((intptr_t)sock));
+    }
+    // Unblock signals
+    sigemptyset(&mask);
+    pthread_sigmask(SIG_SETMASK, &mask, NULL);
+    signal(SIGTERM, handle_term);
+    signal(SIGINT, handle_term);
+    eprintf("%i threads waiting for clients on port %u\n", num_threads,
+            port);
+    // Fill in context for signal handler
+    context.num_threads = num_threads;
+    context.port = port;
+    context.sock = sock;
+    context.threads = threads;
+    pause();
+    exit(EXIT_SUCCESS);
 }

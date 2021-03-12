@@ -37,6 +37,9 @@ bool get_start_line_and_headers(int client, char* buffer, int max_buf_len) {
   for (;;) {
     int num = recv(client, buffer, max_buf_len, 0);
     if (num == -1) {
+      if (errno == EAGAIN) {
+        eprintf("recv: Socket timed out\n");
+      }
       perror("recv");
       return false;
     }

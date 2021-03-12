@@ -190,6 +190,10 @@ int main(int argc, char** argv) {
         perror("socket");
         return EXIT_FAILURE;
     }
+    if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int)) <
+        0) {
+      perror("setsockopt: SO_REUSEADDR");
+    }
     struct sockaddr_in6 server;
     server.sin6_family = AF_INET6;
     server.sin6_port = htons(port);

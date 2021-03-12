@@ -15,6 +15,8 @@ struct client_data {
   struct sockaddr_in6 client_addr;
 };
 
+#define eprintf(...) fprintf(stderr, __VA_ARGS__);
+
 #define MAX_BUF_LEN 1024
 
 void _500(int client) {
@@ -35,7 +37,7 @@ bool get_start_line_and_headers(int client, char* buffer, int max_buf_len) {
       return false;
     }
     if (num == 0) {
-      fprintf(stderr, "recv: Unexpected socket close\n");
+      eprintf("recv: Unexpected socket close\n");
       return false;
     }
     for (int i = 0; i < num; i++) {
@@ -51,7 +53,7 @@ bool get_start_line_and_headers(int client, char* buffer, int max_buf_len) {
     buffer += num;
     max_buf_len -= num;
     if (max_buf_len == 0) {
-      fprintf(stderr, "recv: Buffer Full\n");
+      eprintf("recv: Buffer Full\n");
       return false;
     }
   }
@@ -106,7 +108,7 @@ void return_ip(struct client_data* d) {
   if (send(d->client_sock, buffer, response_len, 0) == -1) {
       perror("send");
   }
-  fprintf(stderr, "%s\n", ip);
+  eprintf("%s\n", ip);
 fail:
   shutdown(d->client_sock, SHUT_RDWR);
   close(d->client_sock);
@@ -116,7 +118,7 @@ fail:
 int main(int argc, char** argv) {
     int port;
     if (argc != 2) {
-      fprintf(stderr, "Usage:\n\t%s <port>\n", argv[0]);
+      eprintf("Usage:\n\t%s <port>\n", argv[0]);
       exit(EXIT_FAILURE);
     } else {
       port = atoi(argv[1]);
@@ -135,7 +137,7 @@ int main(int argc, char** argv) {
       exit(EXIT_FAILURE);
     }
     listen(sock, 128);
-    fprintf(stderr, "Waiting for clients on port %u\n", port);
+    eprintf("Waiting for clients on port %u\n", port);
     //TODO switch to epoll in a thread pool to see if that's faster
     for(;;) {
         struct client_data* d = malloc(sizeof(struct client_data));
